@@ -17,9 +17,8 @@ env/
 .coverage
 htmlcov/
 
-# Runtime-generated data and reports
+# Runtime-generated market data
 data_cache/
-outputs/
 
 # Local environment files
 .env
