@@ -1,4 +1,4 @@
-# Finoptix
+# FinOptix - Portfolio Optimization
 
 ML-assisted Black-Litterman portfolio optimization for NSE large-cap equities.
 
