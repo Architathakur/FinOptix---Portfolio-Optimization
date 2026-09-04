@@ -17,8 +17,16 @@ env/
 .coverage
 htmlcov/
 
-# Runtime-generated market data
+# Runtime-generated market data (pickled prices/fundamentals - never commit)
 data_cache/
+
+# Matplotlib cache (MPLCONFIGDIR is pointed at data_cache/matplotlib in main.py)
+.matplotlib/
+data_cache/matplotlib/
+
+# Scratch / throwaway analysis scripts
+scratchpad/
+scratch/
 
 # Local environment files
 .env
