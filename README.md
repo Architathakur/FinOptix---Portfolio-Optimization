@@ -29,13 +29,15 @@ Feed the feature pipeline a seeded pure random walk — iid normal returns, 8000
 
 | Setup | \|corr\| on a random walk |
 |---|---:|
-| Original features + same-day target + original XGB params | 0.394 |
-| Original features + same-day target + **regularized** XGB params | 0.379 |
-| Current features + 21-day forward target + purged split | 0.051 |
+| Original features + same-day target + original XGB params | 0.418 |
+| Original features + same-day target + **regularized** XGB params | 0.404 |
+| Current features + 21-day forward target + purged split | 0.044 |
+
+Mean of five seeds; per-seed the original set spans 0.385-0.445 and the current set 0.008-0.123.
 
 The middle row is the control that matters. Swapping in the current, heavily regularized hyperparameters barely moves the score, so the cause was the construction of the features and target, not model tuning. Per feature, the original set had `returns_20` correlating 0.226 with its own target on a random walk; the current set peaks at 0.080 (`dist_52w_high`), with none of its 14 features above 0.15.
 
-This is a committed regression test, not a one-off script — see `tests/test_no_leakage.py`, which fails if the leaky construction is ever reintroduced.
+All three rows are computed by a committed regression test, not a one-off script. `tests/test_no_leakage.py` keeps a working reconstruction of the original buggy pipeline as a positive control and asserts that the current feature set scores below a quarter of it — a ratio rather than a fixed threshold, because the current set's score is a noise floor that rises as the series shortens, while the leaky control sits near 0.4 at every length. The test also asserts that the control still leaks under the regularized hyperparameters, so the diagnosis above cannot silently become wrong.
 
 ### How it propagated
 
@@ -229,7 +231,7 @@ The tests use synthetic data and do not require internet access. They cover Blac
 
 Two suites are worth calling out:
 
-- `tests/test_no_leakage.py` — the regression guard. It feeds the feature pipeline a seeded random walk and asserts that no feature correlates with the future, that the target is exactly `close[t + 21] / close[t] - 1`, and that the configured model cannot predict an unpredictable series. It scores the original leaky feature set alongside the current one on the same data, so the assertion is a ratio rather than an absolute threshold.
+- `tests/test_no_leakage.py` — the regression guard. It feeds the feature pipeline a seeded random walk and asserts that no feature correlates with the future, that the target is exactly `close[t + 21] / close[t] - 1`, and that the configured model cannot predict an unpredictable series. It scores the original leaky feature set alongside the current one on the same random walks, across five seeds, so the assertion is a ratio against a live control rather than an absolute threshold that would only hold at one series length.
 - `tests/test_pipeline_smoke.py` — runs the entire pipeline end to end against synthetic generators with no network access, and asserts the purge gap between the end of training and `VALID_START`.
 
 ## Results
