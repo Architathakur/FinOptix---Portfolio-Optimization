@@ -99,17 +99,6 @@ def rank_ic(predictions: pd.DataFrame, actuals: pd.DataFrame,
     }
 
 
-def sharpe_ratio(returns: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
-    """Annualized Sharpe ratio of a simple-return series, rf = 0."""
-    returns = pd.Series(returns).dropna()
-    if len(returns) < 2:
-        return np.nan
-    sd = returns.std(ddof=1)
-    if not np.isfinite(sd) or sd <= 0:
-        return np.nan
-    return float(returns.mean() / sd * np.sqrt(periods_per_year))
-
-
 def sharpe_difference_test(returns_a: pd.Series, returns_b: pd.Series,
                            n_boot: int = 5000, seed: int = 42,
                            periods_per_year: int = TRADING_DAYS) -> dict:

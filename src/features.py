@@ -16,7 +16,8 @@ windows. The model was handed today's close and asked to predict today's move,
 which is why it reported prediction correlations of 0.21-0.52 where a real
 daily-return model scores about 0.02-0.05. See tests/test_no_leakage.py for
 the regression guard: on a pure random walk, where predictability is exactly
-zero by construction, the old setup scored ~0.32 and this one scores ~0.00.
+zero by construction, the old construction scores 0.418 and this one 0.044
+(mean of five seeds).
 
 Every feature here is also scale-free. Raw price levels (ma_10, upper_band,
 volatility_20 in rupees) are unusable for trees, which cannot extrapolate

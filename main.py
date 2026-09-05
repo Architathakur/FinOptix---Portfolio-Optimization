@@ -1,7 +1,11 @@
 """
-FinOptix: ML-assisted Black-Litterman portfolio optimizer.
+FinOptix: ML-assisted Black-Litterman portfolio optimizer, single-window mode.
 
 Run with:  python main.py
+
+This is the single held-out TRAIN/VALID/TEST split. For the quarterly
+walk-forward -- 18 rebalances, and the result worth reading -- see
+src/walkforward.py, which has its own entry point.
 
 Pipeline:
   1. ONE download covering TRAIN_START..TEST_END, so every rolling feature

@@ -8,8 +8,9 @@ returns a single CURRENT snapshot: using today's trailing P/E to decide what to
 buy in 2022 is look-ahead bias, and it carries 60% of SCORE_WEIGHTS. See the
 comment on that flag in config.py.
 
-Unlike the original notebook, weights come from config.SCORE_WEIGHTS
-instead of blocking `input()` calls, so the pipeline can run unattended.
+Scoring weights come from config.SCORE_WEIGHTS rather than interactive
+prompts, so the pipeline runs unattended. They are consulted only when the
+fundamentals path is enabled.
 """
 
 import pandas as pd

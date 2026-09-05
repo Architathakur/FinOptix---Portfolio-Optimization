@@ -1,5 +1,9 @@
 """
-Backtest and performance comparison over the held-out test window.
+Simple-return buy-and-hold backtesting and performance comparison.
+
+Used by both entry points: main.py applies it once over the held-out test
+window, and src/walkforward.py applies it to each quarterly hold window before
+stitching the results into one continuous series.
 
 Two bugs from the previous version are fixed here.
 
