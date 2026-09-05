@@ -38,13 +38,23 @@ TICKERS = [
 # exactly one window. TRAIN is additionally purged (see PURGE_DAYS) because a
 # forward-looking label near the end of TRAIN would otherwise peek into VALID.
 # ---------------------------------------------------------------------------
-TODAY = date.today()
+# AS_OF_DATE is pinned rather than read from the clock. Every window below is
+# derived from it, so a fresh clone produces exactly the TRAIN/VALID/TEST split
+# that the committed artifacts in outputs/ -- and the numbers quoted in
+# README.md -- were generated from. Leaving it as date.today() meant the split
+# silently moved every day, so the published results could never be reproduced.
+#
+# Change it (or set it back to date.today()) to re-run against fresher market
+# data. The windows shift with it, so the committed outputs/ CSVs and the
+# README figures will no longer match and should be regenerated.
+AS_OF_DATE = date(2026, 9, 5)
+
 TRAIN_START = "2020-01-01"
-TRAIN_END = (TODAY - timedelta(days=730)).isoformat()
+TRAIN_END = (AS_OF_DATE - timedelta(days=730)).isoformat()
 VALID_START = TRAIN_END
-VALID_END = (TODAY - timedelta(days=365)).isoformat()
+VALID_END = (AS_OF_DATE - timedelta(days=365)).isoformat()
 TEST_START = VALID_END
-TEST_END = TODAY.isoformat()
+TEST_END = AS_OF_DATE.isoformat()
 
 # ---------------------------------------------------------------------------
 # Prediction horizon
