@@ -30,13 +30,26 @@ def test_load_tickers_accepts_lines_and_commas(tmp_path):
 
 
 def test_score_and_select_requires_enough_complete_tickers():
+    """With fundamentals on, a ticker missing them is dropped from the universe."""
     expected_returns = pd.DataFrame({"A": [0.01, 0.02], "B": [0.02, 0.03]})
     fundamentals = pd.DataFrame(
         {"PE": [20.0], "DE": [5.0], "MktCap": [1000.0]},
         index=["A"],
     )
     with pytest.raises(ValueError, match="Only 1 tickers"):
-        score_and_select(expected_returns, fundamentals, top_n=2)
+        score_and_select(expected_returns, fundamentals, top_n=2, use_fundamentals=True)
+
+
+def test_score_and_select_ml_only_needs_no_fundamentals():
+    """
+    The default path ranks on the ML score alone, so a missing fundamentals
+    frame is not an error -- it is the point. See USE_FUNDAMENTALS_IN_SELECTION.
+    """
+    expected_returns = pd.DataFrame({"A": [0.01, 0.02], "B": [0.05, 0.06]})
+    top_stocks, scores = score_and_select(expected_returns, None, top_n=2,
+                                          use_fundamentals=False)
+    assert list(top_stocks.index) == ["B", "A"]      # ranked by predicted return
+    assert "PEScore" not in scores.columns
 
 
 def test_download_prices_retries_and_caches(monkeypatch, tmp_path):
