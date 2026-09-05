@@ -1,3 +1,5 @@
-comparison,observed_diff,ci_low,ci_high,p_value,n_obs,n_boot
-Black-Litterman vs Equal-Weight,-0.3562300714522313,-0.7794159377820836,0.06582567654222099,0.1044,251.0,5000.0
-Black-Litterman vs NIFTY 50,0.13315784134250513,-1.3856235493139992,1.5890455730267041,0.862,246.0,5000.0
+comparison,observed_diff,ci_low,ci_high,p_value,n_obs,n_boot,isolates
+Equal-Weight (Universe) vs NIFTY 50,0.5723190593974677,0.03488881646453423,1.166313066329944,0.0474,246,5000,equal-weighting vs cap-weighting the index
+Equal-Weight (Selected) vs Equal-Weight (Universe),0.565546035370301,-0.3224264422460398,1.469545078872154,0.2202,251,5000,selection effect: picks vs the whole universe
+Black-Litterman vs Equal-Weight (Selected),-0.2513665473046962,-0.5466718156123936,0.04832212592407274,0.0972,251,5000,"weighting effect: BL weights vs equal weights, same names"
+Black-Litterman vs NIFTY 50,0.902419061271512,-0.23295930257128772,2.0790843381339816,0.1362,246,5000,overall: the strategy vs the index

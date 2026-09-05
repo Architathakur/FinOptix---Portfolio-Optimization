@@ -94,7 +94,56 @@ XGB_PARAMS = dict(
 )
 
 # ---------------------------------------------------------------------------
+# Walk-forward backtesting (src/walkforward.py)
+#
+# A single train/valid/test split gives one allocation decision and ~11
+# non-overlapping IC observations -- far too few to separate a real effect
+# from noise in either direction, which is why every bootstrap CI straddled
+# zero. Walk-forward re-fits quarterly and pools the results, turning one
+# decision into ~18 and ~11 IC observations into ~55.
+#
+# At each rebalance date t:
+#   TRAIN  WALKFORWARD_START -> (t - 1y - PURGE_DAYS)   expanding, fixed start
+#   VALID  (t - 1y)          -> (t - PURGE_DAYS)        makes every decision
+#   HOLD   t                 -> next rebalance date     strictly out of sample
+#
+# PURGE_DAYS of trading days are dropped at BOTH inner boundaries: a
+# forward-looking label near the end of TRAIN would otherwise reach into
+# VALID, and one near the end of VALID would reach past t into HOLD.
+#
+# WALKFORWARD_WARMUP_DAYS is downloaded BEFORE WALKFORWARD_START purely so the
+# rolling features (the 252-day trailing high is the binding one) are already
+# warm on the first training day. Without it the first ~252 trading days of
+# TRAIN are unusable and the first viable rebalance slips by a year.
+# ---------------------------------------------------------------------------
+WALKFORWARD_START = "2020-01-01"
+WALKFORWARD_VALID_DAYS = 365    # calendar days in the VALID window
+WALKFORWARD_FREQ = "QS"         # quarterly rebalancing (pandas quarter-start)
+WALKFORWARD_WARMUP_DAYS = 450   # calendar days of pre-history for feature warmup
+FEATURE_WARMUP_ROWS = 252       # longest rolling window in FEATURE_COLUMNS
+
+# ---------------------------------------------------------------------------
+# Fundamentals in stock selection
+#
+# OFF by default, because it is a look-ahead leak that has no clean fix with
+# free data. download_fundamentals returns TODAY's trailing P/E, D/E and market
+# cap -- a single current snapshot -- and SCORE_WEIGHTS gives those three 60%
+# of the selection score. Using a 2026 balance sheet to decide what to buy in
+# 2022 is the future leaking in through a second door, and walk-forward makes
+# it far worse: the same snapshot would drive every rebalance from 2022 on.
+#
+# Fixing it properly needs point-in-time fundamentals (what was actually
+# reported and known as of each rebalance date), which requires a paid data
+# source. Until then, selection ranks on the ML score alone.
+#
+# Setting this True restores the fundamental blend and CONTAMINATES selection
+# in any backtest -- the resulting performance is not a measurement.
+# ---------------------------------------------------------------------------
+USE_FUNDAMENTALS_IN_SELECTION = False
+
+# ---------------------------------------------------------------------------
 # Fundamental scoring weights (must sum to 1.0)
+# Only consulted when USE_FUNDAMENTALS_IN_SELECTION is True.
 # ---------------------------------------------------------------------------
 SCORE_WEIGHTS = dict(
     return_score=0.40,
@@ -115,7 +164,21 @@ VIEW_CONFIDENCE = 0.5  # 0 = no confidence (ignore ML views), 1 = full confidenc
 # Backtest
 # ---------------------------------------------------------------------------
 BENCHMARK_TICKER = "^NSEI"   # NIFTY 50
-COST_BPS = 20.0              # one-off entry cost, basis points of gross exposure
+
+# Stream labels, shared by the single-window and walk-forward reports so the
+# two sets of artifacts can be compared row by row.
+#
+# "Equal-Weight (Selected)" equal-weights the model's own picks, which makes it
+# a benchmark for the WEIGHTING layer only -- it cannot tell you whether the
+# selection layer added anything, because it inherits the same picks.
+# "Equal-Weight (Universe)" holds every tradeable ticker, which is what
+# isolates selection.
+STREAM_BL = "Black-Litterman"
+STREAM_EW_SELECTED = "Equal-Weight (Selected)"
+STREAM_EW_UNIVERSE = "Equal-Weight (Universe)"
+STREAM_BENCHMARK = "NIFTY 50"
+COST_BPS = 20.0              # basis points; charged on turnover at each rebalance
+                             # (single-window mode has one rebalance, so it is an entry cost)
 TRADING_DAYS = 252
 
 # ---------------------------------------------------------------------------

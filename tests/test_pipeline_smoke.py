@@ -79,8 +79,11 @@ def test_pipeline_runs_end_to_end_and_produces_finite_stats(offline_pipeline):
     )
 
     assert isinstance(stats, pd.DataFrame)
-    assert "Black-Litterman" in stats.index
-    assert "Equal-Weight" in stats.index
+    assert config.STREAM_BL in stats.index
+    assert config.STREAM_EW_SELECTED in stats.index
+    # The universe benchmark is what isolates the selection layer; equal
+    # weighting the model's own picks cannot.
+    assert config.STREAM_EW_UNIVERSE in stats.index
     assert set(stats.columns) == {"CAGR", "AnnVol", "Sharpe", "MaxDrawdown"}
     assert np.isfinite(stats.to_numpy(dtype=float)).all(), f"non-finite stats:\n{stats}"
 

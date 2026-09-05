@@ -127,7 +127,7 @@ def purged_train_slice(frame: pd.DataFrame, train_range, purge: int = PURGE_DAYS
 
 def train_predict(panel: dict, train_range, predict_ranges: dict,
                   purge: int = PURGE_DAYS, params: dict | None = None,
-                  min_train_rows: int = MIN_TRAIN_ROWS):
+                  min_train_rows: int = MIN_TRAIN_ROWS, progress: bool = True):
     """
     Fit one model per ticker on `train_range`, predict over each named window.
 
@@ -137,8 +137,12 @@ def train_predict(panel: dict, train_range, predict_ranges: dict,
     train_range    : (start, end) half-open training window
     predict_ranges : {name: (start, end)}, e.g.
                      {"valid": (VALID_START, VALID_END), "test": (...)}
-    purge          : rows dropped from the end of the training slice
+    purge          : rows dropped from the end of the training slice. Pass 0
+                     when the caller has already purged the window boundary
+                     itself, as src/walkforward.py does.
     min_train_rows : tickers with fewer usable training rows are skipped
+    progress       : show the per-ticker progress bar (off for walk-forward,
+                     which would otherwise print one bar per rebalance)
 
     Returns
     -------
@@ -156,7 +160,8 @@ def train_predict(panel: dict, train_range, predict_ranges: dict,
     metric_rows = {}
     skipped = []
 
-    for ticker in tqdm(sorted(panel), desc="Training per-ticker XGBoost models"):
+    for ticker in tqdm(sorted(panel), desc="Training per-ticker XGBoost models",
+                       disable=not progress):
         frame = panel[ticker]
         train_df = purged_train_slice(frame, train_range, purge=purge)
 

@@ -13,8 +13,9 @@ Pipeline:
   4. Select stocks, build Black-Litterman views and the covariance matrix
      using VALID ONLY
   5. Mean-variance optimize (max Sharpe) on the BL posterior
-  6. Freeze the weights, then backtest on TEST against equal-weight and the
-     NIFTY 50, with transaction costs
+  6. Freeze the weights, then backtest on TEST against equal weighting of
+     the picks, equal weighting of the whole universe, and the NIFTY 50,
+     with transaction costs
   7. Bootstrap-test whether the Sharpe differences are distinguishable from
      luck, and save plots + CSVs to outputs/
 
@@ -55,6 +56,26 @@ from src.backtest import compare_portfolios, portfolio_returns
 LOGGER = logging.getLogger(__name__)
 
 IC_SUMMARY_FIELDS = ["n_periods", "mean_ic", "ic_std", "ic_t_stat", "hit_rate"]
+
+# Each step isolates one layer of the strategy, so a difference can be
+# attributed instead of merely observed. Same chain as src/walkforward.py.
+COMPARISONS = [
+    (config.STREAM_EW_UNIVERSE, config.STREAM_BENCHMARK,
+     "equal-weighting vs cap-weighting the index"),
+    (config.STREAM_EW_SELECTED, config.STREAM_EW_UNIVERSE,
+     "selection effect: picks vs the whole universe"),
+    (config.STREAM_BL, config.STREAM_EW_SELECTED,
+     "weighting effect: BL weights vs equal weights, same names"),
+    (config.STREAM_BL, config.STREAM_BENCHMARK,
+     "overall: the strategy vs the index"),
+]
+
+
+def _clean_returns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop tickers with any gap in the window, then any residual bad dates."""
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    return frame.dropna(axis=1, how="any").dropna(axis=0, how="any")
 
 
 def parse_args(argv=None):
@@ -210,8 +231,19 @@ def main(argv=None):
     prices = download_prices(
         tickers, config.TRAIN_START, config.TEST_END, use_cache=use_cache
     )
-    LOGGER.info("Loading fundamentals")
-    fundamentals = download_fundamentals(tickers, use_cache=use_cache)
+    fundamentals = None
+    if config.USE_FUNDAMENTALS_IN_SELECTION:
+        LOGGER.warning(
+            "USE_FUNDAMENTALS_IN_SELECTION is on. download_fundamentals returns a "
+            "CURRENT snapshot, so selection is contaminated by look-ahead bias and "
+            "this backtest is not a measurement. See config.py."
+        )
+        fundamentals = download_fundamentals(tickers, use_cache=use_cache)
+    else:
+        LOGGER.info(
+            "Fundamentals are off in selection; ranking on the ML score alone "
+            "(config.USE_FUNDAMENTALS_IN_SELECTION)."
+        )
 
     # 2. Features + models -------------------------------------------------
     LOGGER.info("Building feature panel over the full price history")
@@ -257,7 +289,8 @@ def main(argv=None):
     # VALID predictions only. Selecting on TEST predictions would pick the
     # stocks that already did well over the window we are about to backtest.
     top_stocks, scores = score_and_select(
-        predictions["valid"], fundamentals, top_n=args.top_n
+        predictions["valid"], fundamentals, top_n=args.top_n,
+        use_fundamentals=config.USE_FUNDAMENTALS_IN_SELECTION,
     )
     scores.to_csv(f"{config.OUTPUT_DIR}/stock_scores.csv") #output#
     LOGGER.info("Top %s stocks selected (on VALID):\n%s", args.top_n, top_stocks)
@@ -265,12 +298,15 @@ def main(argv=None):
 
     # 5. Black-Litterman, entirely from VALID ------------------------------
     LOGGER.info("Computing Black-Litterman posterior from validation-window data")
-    close_all = prices["Close"].reindex(columns=selected).ffill()
+    universe = sorted(panel)
+    close_all = prices["Close"].reindex(columns=universe).ffill()
     daily_returns = close_all.pct_change()
 
-    valid_returns = window_slice(
-        daily_returns, config.VALID_START, config.VALID_END
-    ).dropna(axis=1, how="all").dropna(axis=0, how="any")
+    valid_returns = _clean_returns(
+        window_slice(
+            daily_returns.reindex(columns=selected), config.VALID_START, config.VALID_END
+        )
+    )
     dropped = sorted(set(selected) - set(valid_returns.columns))
     if dropped:
         LOGGER.warning("Dropping selected tickers with no validation prices: %s",
@@ -306,9 +342,8 @@ def main(argv=None):
     # 7. Backtest on TEST --------------------------------------------------
     # First time anything reads the test window.
     LOGGER.info("Backtesting on TEST %s -> %s", config.TEST_START, config.TEST_END)
-    test_returns = window_slice(
-        daily_returns, config.TEST_START, config.TEST_END
-    ).dropna(axis=1, how="all").dropna(axis=0, how="any")
+    test_all = window_slice(daily_returns, config.TEST_START, config.TEST_END)
+    test_returns = _clean_returns(test_all.reindex(columns=selected))
     if test_returns.empty:
         raise ValueError("No test-window returns available for the selected stocks.")
     missing_in_test = sorted(set(selected) - set(test_returns.columns))
@@ -316,13 +351,28 @@ def main(argv=None):
         LOGGER.warning("Selected tickers missing from the test window: %s",
                        ", ".join(missing_in_test))
 
+    # Equal weight across the WHOLE tradeable universe. Equal-weighting the
+    # model's own picks shares the selection layer with the strategy, so it can
+    # only benchmark the weighting. This one benchmarks the selection.
+    universe_returns = _clean_returns(test_all)
+    universe_weights = pd.Series(
+        1.0 / len(universe_returns.columns), index=universe_returns.columns
+    )
+    LOGGER.info("Universe benchmark: equal weight across %s tickers",
+                len(universe_returns.columns))
+
     streams = {
-        "Black-Litterman": portfolio_returns(test_returns, bl_weights, cost_bps=args.cost_bps),
-        "Equal-Weight": portfolio_returns(test_returns, equal_weights, cost_bps=args.cost_bps),
+        config.STREAM_BL: portfolio_returns(test_returns, bl_weights, cost_bps=args.cost_bps),
+        config.STREAM_EW_SELECTED: portfolio_returns(
+            test_returns, equal_weights, cost_bps=args.cost_bps
+        ),
+        config.STREAM_EW_UNIVERSE: portfolio_returns(
+            universe_returns, universe_weights, cost_bps=args.cost_bps
+        ),
     }
     benchmark = _benchmark_stream(use_cache, args.cost_bps)
     if benchmark is not None:
-        streams["NIFTY 50"] = benchmark
+        streams[config.STREAM_BENCHMARK] = benchmark
 
     stats = compare_portfolios(streams)
     stats.to_csv(f"{config.OUTPUT_DIR}/performance_stats.csv") #output#
@@ -332,12 +382,11 @@ def main(argv=None):
 
     # 8. Is the difference distinguishable from luck? ----------------------
     sig_rows = {}
-    for name, stream in streams.items():
-        if name == "Black-Litterman":
-            continue
-        sig_rows[f"Black-Litterman vs {name}"] = sharpe_difference_test(
-            streams["Black-Litterman"], stream
-        )
+    for a, b, note in COMPARISONS:
+        if a in streams and b in streams:
+            result = sharpe_difference_test(streams[a], streams[b])
+            result["isolates"] = note
+            sig_rows[f"{a} vs {b}"] = result
     significance = pd.DataFrame(sig_rows).T
     significance.index.name = "comparison"
     significance.to_csv(f"{config.OUTPUT_DIR}/significance.csv") #output#

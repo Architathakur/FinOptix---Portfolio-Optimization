@@ -2,7 +2,7 @@
 
 ML-assisted Black-Litterman portfolio optimization for NSE large-cap equities.
 
-FinOptix is an end-to-end Python pipeline that combines technical-feature return forecasting, fundamental ranking, Black-Litterman posterior return estimation, and mean-variance optimization. It downloads market data from Yahoo Finance, trains one XGBoost return model per stock, selects a portfolio universe, builds ML-driven investor views, optimizes allocations, and backtests the result against equal weighting and the NIFTY 50 with transaction costs and a bootstrap significance test.
+FinOptix is an end-to-end Python pipeline that combines technical-feature return forecasting, fundamental ranking, Black-Litterman posterior return estimation, and mean-variance optimization. It downloads market data from Yahoo Finance, trains one XGBoost return model per stock, selects a portfolio universe, builds ML-driven investor views, optimizes allocations, and backtests the result against equal weighting of its picks, equal weighting of the whole universe, and the NIFTY 50, with transaction costs and bootstrap significance tests. It runs either as a single held-out window or as an 18-step quarterly walk-forward.
 
 > This project is for education and portfolio demonstration only. It is not financial advice, and historical backtests do not predict future performance.
 
@@ -70,9 +70,12 @@ The bug did not stay in the model. `scoring.py` ranked stocks by mean *predicted
 - Composite stock ranking using ML expected returns, P/E, debt-to-equity, and market cap
 - Black-Litterman posterior returns with absolute views derived from ML predictions
 - Max-Sharpe portfolio optimization via PyPortfolioOpt
-- Backtest against equal weighting and the NIFTY 50, with transaction costs
+- Walk-forward backtesting: 18 quarterly rebalances, expanding training window, purged at both inner boundaries
+- Three benchmarks, which decompose the result into an equal-weighting effect, a selection effect and a weighting effect
+- Turnover-based transaction costs, charged against drifted weights at each rebalance
 - Bootstrapped Sharpe-difference tests with confidence intervals and p-values
-- Synthetic-data unit tests that do not require network access, including a random-walk leakage guard
+- Fundamentals excluded from selection by default, because a current snapshot is look-ahead bias
+- Synthetic-data unit tests that do not require network access, including a random-walk leakage guard and a strict walk-forward split audit
 
 ## Methodology
 
@@ -111,6 +114,23 @@ Bootstrap the Sharpe differences
 
 Nothing in the pipeline reads the TEST window until the weights are final. The moment a parameter is chosen by looking at TEST, TEST stops being held out.
 
+### Walk-forward
+
+The single-window scheme above yields one allocation decision and about eleven non-overlapping IC observations — not enough to distinguish a real effect from noise in either direction, which is why every confidence interval it produced straddled zero. `src/walkforward.py` re-runs the entire decision process quarterly:
+
+```text
+At each rebalance date t:
+  TRAIN   WALKFORWARD_START -> (t - 1y - PURGE_DAYS)    expanding, fixed start
+  VALID   (t - 1y)          -> (t - PURGE_DAYS)         makes every decision
+  HOLD    t                 -> next rebalance date      strictly out of sample
+```
+
+`PURGE_DAYS` trading days are removed at **both** inner boundaries. A label at time `t` spans `(t, t + PRED_HORIZON]`, so without the first gap the tail of TRAIN carries labels reaching into VALID, and without the second the tail of VALID carries labels reaching past `t` into the window being held. The gaps are counted on the actual trading calendar, so they survive holidays.
+
+Weights are held through the quarter and drift with performance. At the next rebalance the cost is charged on **turnover against the drifted weights**, `(COST_BPS / 10000) * sum|w_new - w_drifted|`, not on gross exposure — charging against the original targets would invent a trade that never happened.
+
+The feature panel is computed once over the full history and sliced per rebalance. Recomputing inside the loop would restart every rolling window in each slice, and would also be 18x the work.
+
 ### ML-Driven Black-Litterman Views
 
 A common weakness in portfolio notebooks is that ML predictions are used for screening while Black-Litterman views are manually specified and disconnected from the model. FinOptix wires the two together by using each selected stock's mean XGBoost-predicted return as an absolute Black-Litterman view, annualized so that the views, the prior and the risk-aversion parameter share units.
@@ -129,6 +149,7 @@ finoptix/
 │   ├── features.py          # Trailing-only, scale-free feature engineering
 │   ├── ml_returns.py        # Feature panel, purged training, multi-window prediction
 │   ├── evaluation.py        # Rank IC and bootstrapped Sharpe-difference test
+│   ├── walkforward.py       # Quarterly walk-forward backtest (own entry point)
 │   ├── scoring.py           # ML + fundamentals composite ranking
 │   ├── black_litterman.py   # Prior, views, Omega, posterior calculations
 │   ├── optimizer.py         # Max-Sharpe optimization
@@ -174,6 +195,14 @@ python main.py --tickers-file tickers.txt
 python main.py --refresh-cache
 ```
 
+Run the walk-forward backtest (this is the one to read):
+
+```bash
+python -m src.walkforward
+```
+
+It accepts the same flags, plus `--use-fundamentals` to re-enable the fundamental blend in selection (off by default — see Configuration).
+
 Options:
 
 | Flag | Description |
@@ -194,8 +223,19 @@ The pipeline writes these artifacts to `outputs/`:
 | `portfolio_weights.csv` | Final optimized portfolio weights |
 | `performance_stats.csv` | CAGR, annualized volatility, Sharpe, max drawdown per stream |
 | `significance.csv` | Bootstrapped Sharpe differences with 95% CIs and p-values |
-| `cumulative_returns.png` | BL vs. equal-weight vs. NIFTY 50 cumulative returns |
+| `cumulative_returns.png` | Cumulative returns for all four streams |
 | `portfolio_weights.png` | Final portfolio allocation chart |
+
+The walk-forward run writes:
+
+| File | Description |
+|---|---|
+| `walkforward_summary.csv` | Stitched-series stats per stream, plus turnover and total cost |
+| `walkforward_by_period.csv` | Per-rebalance breakdown: date, n selected, turnover, return per stream, window IC |
+| `walkforward_ic.csv` | The pooled IC observations, one row per non-overlapping window |
+| `walkforward_ic_summary.csv` | Pooled IC mean, std, t-stat, hit rate, n |
+| `walkforward_significance.csv` | Bootstrapped Sharpe differences for the decomposition chain |
+| `walkforward_cumulative_returns.png` | Cumulative returns across the full stitched period |
 
 ## Configuration
 
@@ -215,6 +255,11 @@ Most strategy parameters live in `config.py`.
 | `TOP_N_STOCKS` | Default number of selected stocks |
 | `RISK_AVERSION`, `TAU` | Black-Litterman model parameters |
 | `VIEW_CONFIDENCE` | Weight assigned to ML-driven views |
+| `WALKFORWARD_START` | First date of the expanding training window |
+| `WALKFORWARD_VALID_DAYS` | Length of the VALID window at each rebalance (365 days) |
+| `WALKFORWARD_FREQ` | Rebalance frequency (`QS`, quarterly) |
+| `WALKFORWARD_WARMUP_DAYS` | Pre-history downloaded so features are warm on day one of TRAIN |
+| `USE_FUNDAMENTALS_IN_SELECTION` | **False.** Turning it on contaminates selection with look-ahead bias |
 | `BENCHMARK_TICKER` | Index benchmark, default `^NSEI` |
 | `COST_BPS` | Default one-off entry cost in basis points |
 | `TRADING_DAYS` | Annualization factor (252) |
@@ -233,76 +278,148 @@ Two suites are worth calling out:
 
 - `tests/test_no_leakage.py` — the regression guard. It feeds the feature pipeline a seeded random walk and asserts that no feature correlates with the future, that the target is exactly `close[t + 21] / close[t] - 1`, and that the configured model cannot predict an unpredictable series. It scores the original leaky feature set alongside the current one on the same random walks, across five seeds, so the assertion is a ratio against a live control rather than an absolute threshold that would only hold at one series length.
 - `tests/test_pipeline_smoke.py` — runs the entire pipeline end to end against synthetic generators with no network access, and asserts the purge gap between the end of training and `VALID_START`.
+- `tests/test_walkforward.py` — the walk-forward split audit. For every rebalance it materializes the actual TRAIN/VALID/HOLD date sets through the same `window_slice` the pipeline uses and asserts that the purge gap is exactly `PURGE_DAYS` trading days at both inner boundaries, that the forward-looking *label* of the last row of each window closes before the next window opens, that no hold-window date appears anywhere in that rebalance's training or validation data, and that the hold windows tile the period exactly once with no date double-counted or skipped.
 
 ## Results
 
-Generated from a live Yahoo Finance run on 2026-09-04. These are reported exactly as produced.
+Two backtests are reported. **The walk-forward result is the headline**; the
+single-window one is kept because it is what the rest of this README's
+methodology section describes, and because comparing the two is instructive.
 
-| Setting | Value |
-|---|---|
-| Training window | 2020-01-01 to 2024-09-04 (885 usable rows per ticker after purge) |
-| Validation window | 2024-09-04 to 2025-09-04 |
-| Test/backtest window | 2025-09-04 to 2026-09-04 |
-| Universe | 47 of 49 tickers trained; `LTIM.NS` and `TATAMOTORS.NS` returned 404s |
-| Entry cost | 20 bps of gross exposure, charged on day 0 |
-| Selected stocks | `COALINDIA.NS`, `RELIANCE.NS`, `NTPC.NS`, `TCS.NS`, `ITC.NS`, `ONGC.NS`, `SUNPHARMA.NS`, `HINDALCO.NS`, `ADANIPORTS.NS`, `ASIANPAINT.NS` |
+Both were generated from live Yahoo Finance runs on 2026-09-05, with
+`USE_FUNDAMENTALS_IN_SELECTION = False`, 20bps of transaction cost, and
+`TOP_N_STOCKS = 10`. Reported exactly as produced.
 
-### Rank information coefficient
+### Walk-forward (headline)
+
+18 quarterly rebalances, 2022-04-01 to 2026-09-05, expanding training window,
+47 tradeable tickers. Every allocation is strictly out of sample: at each
+rebalance the models are refit on TRAIN, the stocks and weights are chosen on
+VALID, and the weights are then held through the following quarter with 21
+trading days purged at both inner boundaries.
+
+**Pooled rank IC across all hold windows**
+
+| n_periods | Mean IC | IC std | t-stat | Hit rate |
+|---:|---:|---:|---:|---:|
+| 52 | 0.0096 | 0.1868 | **0.37** | 0.577 |
+
+Pooling was the point of this exercise: it takes the IC sample from 11
+observations to 52. The answer did not change. A mean IC of 0.0096 with a
+t-stat of 0.37 is zero. **The model does not rank stocks better than chance,
+and now that conclusion rests on a sample large enough to say so** rather than
+on a window too short to distinguish anything. Individual quarters ranged from
+-0.23 to +0.13 and only 7 of 18 had a positive mean IC.
+
+**Performance on the stitched daily series**
+
+| Stream | CAGR | AnnVol | Sharpe | Max Drawdown | Avg turnover/rebalance | Total cost |
+|---|---:|---:|---:|---:|---:|---:|
+| Black-Litterman | 11.75% | 14.69% | 0.830 | -22.13% | 0.759 | 2.73% |
+| Equal-Weight (Selected) | 12.98% | 15.55% | 0.863 | -24.12% | 0.711 | 2.56% |
+| Equal-Weight (Universe) | **13.00%** | 12.96% | **1.008** | **-17.40%** | 0.135 | 0.49% |
+| NIFTY 50 | 7.44% | 13.18% | 0.611 | -15.77% | 0.056 | 0.20% |
+
+**The decomposition, and the actual finding**
+
+Bootstrapped Sharpe differences, 5000 resamples, dates resampled jointly:
+
+| Step | Isolates | Sharpe diff | 95% CI | p |
+|---|---|---:|---:|---:|
+| Universe EW vs NIFTY 50 | equal- vs cap-weighting | **+0.399** | [+0.102, +0.699] | **0.007** |
+| Selected EW vs Universe EW | the selection layer | -0.145 | [-0.603, +0.314] | 0.536 |
+| BL vs Selected EW | the weighting layer | -0.033 | [-0.296, +0.231] | 0.816 |
+| BL vs NIFTY 50 | everything combined | +0.221 | [-0.417, +0.869] | 0.495 |
+
+The chain is additive and lands exactly on the observed Sharpes:
+`0.611 (NIFTY) + 0.399 - 0.145 - 0.033 = 0.830 (BL)`.
+
+**The only effect in this pipeline that is distinguishable from noise is
+equal-weighting versus cap-weighting the index.** It is worth +0.40 Sharpe at
+p = 0.007, and it is not a machine-learning result — it is the well-documented
+equal-weight premium, available to anyone willing to hold 47 stocks in equal
+proportion and rebalance quarterly.
+
+Both ML layers subtract. Selection costs -0.145 Sharpe, weighting a further
+-0.033; neither is statistically distinguishable from zero, but neither shows
+any sign of adding value either. Black-Litterman finishes ahead of the NIFTY 50
+by +0.221 Sharpe, and the entire margin -- more than the entire margin -- comes
+from the equal-weighting effect that the universe benchmark isolates. Without
+that benchmark the +0.221 looks like the strategy working. It is not.
+
+The cost side reinforces it. The Black-Litterman portfolio turns over 76% of
+the book per quarter and pays 2.73% in transaction costs over the period,
+against 0.49% for the universe benchmark that beat it on every measure --
+higher CAGR, lower volatility, shallower drawdown, higher Sharpe.
+
+This is the expected outcome. Cross-sectional equity returns are close to
+unpredictable from technical indicators, so a correctly evaluated pipeline
+should show an IC near zero and no reliable edge from selection or weighting.
+That is what it shows.
+
+### Single-window (for comparison)
+
+TRAIN 2020-01-01 to 2024-09-05, VALID to 2025-09-05, TEST 2025-09-05 to
+2026-09-05. Selected on VALID: `INDUSINDBK.NS`, `NTPC.NS`, `COALINDIA.NS`,
+`ASIANPAINT.NS`, `SBIN.NS`, `AXISBANK.NS`, `ADANIPORTS.NS`, `SUNPHARMA.NS`,
+`NESTLEIND.NS`, `ITC.NS`.
 
 | Window | n_periods | Mean IC | IC std | t-stat | Hit rate |
 |---|---:|---:|---:|---:|---:|
-| VALID | 12 | -0.087 | 0.161 | -1.87 | 0.42 |
-| TEST | 11 | 0.057 | 0.211 | 0.90 | 0.64 |
+| VALID | 12 | -0.1073 | 0.1783 | -2.09 | 0.333 |
+| TEST | 11 | 0.0369 | 0.1648 | 0.74 | 0.545 |
 
-**The model has no demonstrated predictive skill on this data.** The test-window IC of 0.057 carries a t-stat of 0.90, which is not distinguishable from zero, and the pipeline logs a warning saying so at the end of every run. The validation IC is *negative*: over the window actually used to pick stocks, the model ranked them slightly backwards. Selection therefore ran on a signal that was, if anything, anti-predictive at the moment the choice was made.
-
-This is the expected result. Cross-sectional equity returns are close to unpredictable from technical indicators alone, and a corrected pipeline should produce an IC near zero. The earlier 0.212-0.516 figures were not a better model; they were the same non-signal measured with a broken ruler.
-
-### Backtest
-
-| Portfolio | CAGR | Ann. Volatility | Sharpe | Max Drawdown |
+| Stream | CAGR | AnnVol | Sharpe | Max Drawdown |
 |---|---:|---:|---:|---:|
-| Black-Litterman | -1.88% | 11.10% | -0.115 | -8.32% |
-| Equal Weight | 2.15% | 11.66% | 0.241 | -8.48% |
-| NIFTY 50 | -3.76% | 13.12% | -0.227 | -15.18% |
+| Black-Litterman | 7.28% | 12.09% | 0.641 | -9.94% |
+| Equal-Weight (Selected) | 11.26% | 12.89% | 0.893 | -10.99% |
+| Equal-Weight (Universe) | 3.31% | 12.24% | 0.327 | -12.42% |
+| NIFTY 50 | -3.69% | 13.12% | -0.221 | -15.18% |
 
-**The Black-Litterman portfolio lost money and lost to equal-weighting its own stock picks.** It finished ahead of the NIFTY 50, but see below before reading anything into that.
-
-### Are the differences real?
-
-Bootstrapped Sharpe differences, 5000 resamples, dates resampled jointly so contemporaneous correlation is preserved:
-
-| Comparison | Sharpe difference | 95% CI | p-value | n |
+| Step | Sharpe diff | 95% CI | p | n |
 |---|---:|---:|---:|---:|
-| BL vs Equal Weight | -0.356 | [-0.779, 0.066] | 0.104 | 251 |
-| BL vs NIFTY 50 | 0.133 | [-1.386, 1.589] | 0.862 | 246 |
+| Universe EW vs NIFTY 50 | +0.572 | [+0.035, +1.166] | 0.047 | 246 |
+| Selected EW vs Universe EW | +0.566 | [-0.322, +1.470] | 0.220 | 251 |
+| BL vs Selected EW | -0.251 | [-0.547, +0.048] | 0.097 | 251 |
+| BL vs NIFTY 50 | +0.902 | [-0.233, +2.079] | 0.136 | 246 |
 
-Both confidence intervals straddle zero, so neither result is distinguishable from luck. The portfolio's loss to equal weighting is not statistically established, and neither is its win over the NIFTY 50 — a p-value of 0.862 on the latter means that comparison carries essentially no information. One year of daily data cannot resolve Sharpe differences of this size in either direction, which is itself worth knowing: a 12-month backtest is not enough evidence to conclude anything about a strategy, favourable or otherwise.
+The TEST IC t-stat of 0.74 is again indistinguishable from zero. The VALID IC
+is *negative* at -2.09, meaning that over the window used to choose the stocks,
+the model ranked them backwards.
 
-For context on why the per-ticker numbers are no longer the headline: across the 47 trained tickers, per-ticker time-series correlation between prediction and realized forward return averaged 0.048 on VALID and 0.086 on TEST, ranging from -0.43 to 0.62. Those correlations are computed on heavily overlapping 21-day windows, which inflates them, and they answer a question the strategy never asks — the strategy ranks stocks against each other on a given day, which is what the rank IC measures.
+**Why this table should not be trusted, and why walk-forward exists.** An
+earlier run of this same single-window backtest -- before fundamentals were
+removed from selection, and dated one day earlier -- reported a
+Black-Litterman CAGR of -1.88% and a Sharpe of -0.115. Changing the selection
+rule and moving the window by a single day swung the headline return by nine
+percentage points. Nothing about the strategy changed; the sample was simply
+too small to hold still. One allocation decision and eleven IC observations
+cannot support a conclusion, which is precisely why every confidence interval
+in that run straddled zero, and why the walk-forward result above is the one
+worth reading.
 
 ## Known Limitations
 
 - Yahoo Finance is a free, unofficial data source. Ticker availability, schemas, rate limits, and fundamentals can change without notice.
-- `LTIM.NS` and `TATAMOTORS.NS` returned 404/no-timezone errors in the 2026-09-04 run; the pipeline skipped them and continued with the remaining universe.
-- Fundamentals from `yfinance` are current snapshots, not point-in-time historical fundamentals. This is a remaining source of look-ahead bias in the selection step, and it has not been fixed.
-- The ticker universe is today's NIFTY 50 constituents, so the backtest carries survivorship bias.
+- `LTIM.NS` and `TATAMOTORS.NS` returned 404/no-timezone errors in the 2026-09-05 runs; the pipeline skipped them and continued with the remaining 47 tickers.
+- **Fundamentals are excluded from selection, and that is a workaround rather than a fix.** `download_fundamentals` returns today's trailing P/E, D/E and market cap — a single current snapshot — and `SCORE_WEIGHTS` gives those three 60% of the selection score. Using a 2026 balance sheet to decide what to buy in 2022 is look-ahead bias, and walk-forward makes it worse because the same snapshot would drive all 18 rebalances. Doing it properly needs point-in-time fundamentals, which requires a paid data source, so `USE_FUNDAMENTALS_IN_SELECTION` defaults to `False` and selection ranks on the ML score alone. **If you set that flag to `True`, the selection layer is contaminated and the backtest stops being a measurement.**
+- The ticker universe is today's NIFTY 50 constituents, so both backtests carry survivorship bias. This affects the universe benchmark too, and is the most likely reason equal weighting beats the index so cleanly: the 47 names are the ones that were still in the index in 2026.
 - Market-implied equilibrium returns use an equal-weight proxy rather than float-adjusted market-cap weights.
-- The backtest models a one-off entry cost only. It does not model slippage, market impact, taxes, liquidity constraints, or the cost of periodic rebalancing.
-- The portfolio is formed once and held. There is no walk-forward re-estimation, so the reported result rests on a single allocation decision over a single 12-month window.
-- A single test window cannot support a conclusion about strategy performance in either direction. See the p-values above.
+- Transaction costs are modelled as basis points on turnover. Slippage, market impact, taxes, liquidity constraints and borrow are not modelled, and at ~76% quarterly turnover the true cost of the Black-Litterman portfolio is understated more than the benchmarks'.
+- The walk-forward covers 2022-2026, a single mostly-rising regime for Indian equities. 18 rebalances is enough to say the IC is not distinguishable from zero; it is not enough to characterise behaviour across regimes.
+- The models are refit quarterly but every hyperparameter is fixed across the whole period. Nothing is tuned per rebalance, which is deliberate — tuning inside the loop on VALID would need its own nested split — but it does mean the model is not adapting.
 - This is a research and portfolio project, not production trading infrastructure.
 
 ## Roadmap
 
 Potential future improvements:
 
+- Source point-in-time fundamentals, so the fundamental blend can be re-enabled without contaminating selection.
+- Build the universe from historical index membership to remove survivorship bias, which would also test whether the equal-weight premium above survives.
 - Replace equal-weight prior weights with market-cap weights.
-- Source point-in-time fundamentals to remove the remaining look-ahead bias in selection.
-- Build the universe from historical index membership to remove survivorship bias.
 - Add sector exposure reporting and concentration constraints.
-- Add walk-forward rebalancing across many windows, which would give the IC and the Sharpe estimates enough observations to be meaningful.
-- Model ongoing turnover costs rather than a single entry cost.
+- Model slippage and market impact, not just a basis-point charge on turnover.
+- Extend the walk-forward further back to cover more than one market regime.
 - Store model artifacts and prediction diagnostics per run.
 
 ## License
